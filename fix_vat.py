@@ -5,6 +5,8 @@ Dla zamowien w statusie STATUS_ID (domyslnie 166441 'Do zafakturowania'):
   - osoba prywatna (brak NIP/firmy) z dostawa do kraju UE (poza PL): stawka = stawka OSS kraju dostawy
   - osoba prywatna z dostawa do PL: 23%
   - firmy (NIP) i kraje spoza UE: bez zmian
+  - Nalokalu, grzejniki.pl, zamowienia BL Connect i zamowienia o wartosci 0: przeniesione do statusu
+    'Fakturowanie zbiorcze' (faktura zbiorcza na koniec miesiaca, recznie)
 Cena brutto pozycji NIE jest zmieniana. Pozycje o cenie 0 sa pomijane.
 Domyslnie tryb 'dry-run' (tylko raport). Zapis: APPLY=1.
 """
@@ -23,6 +25,17 @@ def call(method, params):
     if r.get("status") != "SUCCESS":
         raise RuntimeError(f"{method}: {r}")
     return r
+
+MONTHLY_STATUS_ID = int(os.environ.get("MONTHLY_STATUS_ID", "170391"))
+MONTHLY_KEYS = ("nalokalu", "grzejniki")
+
+def is_monthly(o):
+    txt = " ".join(str(o.get(k, "")) for k in ("invoice_company", "delivery_company", "invoice_fullname", "email")).lower()
+    if any(k in txt for k in MONTHLY_KEYS):
+        return True
+    if o.get("order_source") == "blconnect":
+        return True
+    return sum(float(p["price_brutto"]) * float(p["quantity"]) for p in o["products"]) == 0
 
 def target_rate(o):
     firm = bool((o.get("invoice_nip") or "").strip()) or bool((o.get("invoice_company") or "").strip())
@@ -43,7 +56,16 @@ def main():
         if len(o) < 100:
             break
     changes = 0
+    rest = []
     for o in orders:
+        if is_monthly(o):
+            print(f"order {o['order_id']} -> status 'Fakturowanie zbiorcze'", flush=True)
+            changes += 1
+            if APPLY:
+                call("setOrderStatus", {"order_id": o["order_id"], "status_id": MONTHLY_STATUS_ID})
+        else:
+            rest.append(o)
+    for o in rest:
         t = target_rate(o)
         if t is None:
             continue
