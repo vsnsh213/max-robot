@@ -1,0 +1,15 @@
+name: Korekta VAT w zamowieniach BaseLinker
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch:
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Fix VAT
+        env:
+          BLT: ${{ secrets.BASELINKER_TOKEN }}
+          APPLY: "1"
+        run: python3 fix_vat.py
