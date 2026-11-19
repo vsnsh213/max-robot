@@ -2,6 +2,7 @@
 """Robot MAX: hurtowe wyslanie zamowien do faktury Optima (OpSync).
 Dla listy ID (env IDS): pomija zamowienia z FS w Pole dodatkowe 2 i zamowienia miesieczne,
 NAJPIERW poprawia VAT (jak fix_vat.py), POTEM ustawia status 'Do zafakturowania' (166441).
+Pomija tez zamowienia anulowane / w koszu.
 Domyslnie dry-run. Zapis: APPLY=1.
 """
 import os, time
@@ -10,6 +11,7 @@ import fix_vat as fv
 IDS = [int(x) for x in os.environ.get("IDS", "").replace(" ", "").split(",") if x]
 APPLY = os.environ.get("APPLY") == "1"
 done = skipped = vat = 0
+ST = {int(s["id"]): s["name"] for s in fv.call("getOrderStatusList", {}).get("statuses", [])}
 for oid in IDS:
     res = fv.call("getOrders", {"order_id": oid, "get_unconfirmed_orders": True}).get("orders", [])
     if not res:
@@ -17,6 +19,9 @@ for oid in IDS:
     o = res[0]
     if "FS/" in str(o.get("extra_field_2", "")):
         print(f"{oid}: juz ma {o.get('extra_field_2')}", flush=True); skipped += 1; continue
+    sname = ST.get(int(o.get("order_status_id") or 0), "")
+    if "anul" in sname.lower() or "kosz" in sname.lower():
+        print(f"{oid}: status '{sname}' -> pomijam", flush=True); skipped += 1; continue
     if fv.is_monthly(o):
         print(f"{oid}: miesieczne/0 zl -> pomijam", flush=True); skipped += 1; continue
     t = fv.target_rate(o)
