@@ -1,0 +1,21 @@
+name: Hurtowo do faktury (Do zafakturowania)
+on:
+  workflow_dispatch:
+    inputs:
+      ids:
+        description: "ID zamowien przez przecinek"
+        required: true
+      apply:
+        description: "1 = zapis, 0 = tylko raport"
+        default: "0"
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Batch
+        env:
+          BLT: ${{ secrets.BASELINKER_TOKEN }}
+          IDS: ${{ inputs.ids }}
+          APPLY: ${{ inputs.apply }}
+        run: python3 batch_invoice.py
