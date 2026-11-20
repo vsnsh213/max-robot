@@ -5,7 +5,8 @@ Dla zamowien w statusie STATUS_ID (domyslnie 166441 'Do zafakturowania'):
   - osoba prywatna (brak NIP/firmy) z dostawa do kraju UE (poza PL): stawka = stawka OSS kraju dostawy
   - osoba prywatna z dostawa do PL: 23%
   - firmy (NIP) i kraje spoza UE: bez zmian
-  - Nalokalu, grzejniki.pl, zamowienia BL Connect i zamowienia o wartosci 0: przeniesione do statusu
+  - brak nazwy nabywcy w danych do faktury: kopiowane z adresu dostawy (imie/firma/adres)
+  - Nalokalu, grzejniki.pl, Patroniak (egrzejniki), Gardhill, zamowienia BL Connect i zamowienia o wartosci 0: przeniesione do statusu
     'Fakturowanie zbiorcze' (faktura zbiorcza na koniec miesiaca, recznie)
 Cena brutto pozycji NIE jest zmieniana. Pozycje o cenie 0 sa pomijane.
 Domyslnie tryb 'dry-run' (tylko raport). Zapis: APPLY=1.
@@ -27,7 +28,7 @@ def call(method, params):
     return r
 
 MONTHLY_STATUS_ID = int(os.environ.get("MONTHLY_STATUS_ID", "170391"))
-MONTHLY_KEYS = ("nalokalu", "grzejniki")
+MONTHLY_KEYS = ("nalokalu", "grzejniki", "patroniak", "gardhill", "hill ceramic")
 
 def is_monthly(o):
     txt = " ".join(str(o.get(k, "")) for k in ("invoice_company", "delivery_company", "invoice_fullname", "email")).lower()
@@ -36,6 +37,20 @@ def is_monthly(o):
     if o.get("order_source") == "blconnect":
         return True
     return sum(float(p["price_brutto"]) * float(p["quantity"]) for p in o["products"]) == 0
+
+INV_FIELDS = (("invoice_fullname", "delivery_fullname"), ("invoice_company", "delivery_company"),
+              ("invoice_address", "delivery_address"), ("invoice_postcode", "delivery_postcode"),
+              ("invoice_city", "delivery_city"), ("invoice_country_code", "delivery_country_code"))
+
+def fill_invoice_data(o):
+    """Jesli w danych do faktury nie ma ani imienia, ani firmy - przepisz z adresu dostawy."""
+    if (o.get("invoice_fullname") or "").strip() or (o.get("invoice_company") or "").strip():
+        return {}
+    upd = {}
+    for inv, dlv in INV_FIELDS:
+        if not (o.get(inv) or "").strip() and (o.get(dlv) or "").strip():
+            upd[inv] = o[dlv]
+    return upd
 
 def target_rate(o):
     firm = bool((o.get("invoice_nip") or "").strip()) or bool((o.get("invoice_company") or "").strip())
@@ -66,6 +81,12 @@ def main():
         else:
             rest.append(o)
     for o in rest:
+        upd = fill_invoice_data(o)
+        if upd:
+            print(f"order {o['order_id']}: brak nabywcy -> {upd}", flush=True)
+            changes += 1
+            if APPLY:
+                call("setOrderFields", dict(order_id=o["order_id"], **upd))
         t = target_rate(o)
         if t is None:
             continue
