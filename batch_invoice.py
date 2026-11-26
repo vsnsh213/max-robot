@@ -24,14 +24,11 @@ for oid in IDS:
         print(f"{oid}: status '{sname}' -> pomijam", flush=True); skipped += 1; continue
     if fv.is_monthly(o):
         print(f"{oid}: miesieczne/0 zl -> pomijam", flush=True); skipped += 1; continue
-    t = fv.target_rate(o)
-    if t is not None:
-        for p in o["products"]:
-            if float(p["price_brutto"]) > 0 and float(p["tax_rate"]) != t:
-                print(f"{oid} {o['delivery_country_code']} {p['sku']}: VAT {p['tax_rate']} -> {t}", flush=True)
-                vat += 1
-                if APPLY:
-                    fv.call("setOrderProductFields", {"order_id": oid, "order_product_id": p["order_product_id"], "tax_rate": t})
+    for p, t in fv.vat_changes(o):
+        print(f"{oid} {o['delivery_country_code']} {p['sku']}: VAT {p['tax_rate']} -> {t}", flush=True)
+        vat += 1
+        if APPLY:
+            fv.call("setOrderProductFields", {"order_id": oid, "order_product_id": p["order_product_id"], "tax_rate": t})
     print(f"{oid}: -> Do zafakturowania", flush=True)
     done += 1
     if APPLY:
