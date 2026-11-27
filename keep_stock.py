@@ -70,12 +70,17 @@ def main():
         page += 1
 
     upd, zero, skipped, ok = {}, [], [], 0
+    items = []  # (id do zapisu, sku/opis, nazwa, stan)
     for pid, p in stock.items():
         sku, name = names.get(pid, ("?", "?"))
-        if p.get("variants"):
-            skipped.append(f"{sku} ({pid}) ma warianty - pomijam")
-            continue
-        q = int(float((p.get("stock") or {}).get(wh, 0)))
+        variants = p.get("variants") or {}
+        if variants:
+            for vid, vst in variants.items():
+                items.append((str(vid), f"{sku or pid}/war.{vid}", name, int(float((vst or {}).get(wh, 0)))))
+        else:
+            items.append((pid, sku, name, int(float((p.get("stock") or {}).get(wh, 0)))))
+
+    for pid, sku, name, q in items:
         if ONLY and sku not in ONLY:
             continue
         if sku in SKIP:
@@ -115,7 +120,12 @@ def main():
             if len(prods) < 1000:
                 break
             page += 1
-        bad = [pid for pid in upd if int(float((after.get(pid, {}).get("stock") or {}).get(wh, -1))) < TARGET]
+        flat = {}
+        for k, v in after.items():
+            flat[k] = int(float((v.get("stock") or {}).get(wh, -1)))
+            for vid, vst in (v.get("variants") or {}).items():
+                flat[str(vid)] = int(float((vst or {}).get(wh, -1)))
+        bad = [pid for pid in upd if flat.get(pid, -1) < TARGET]
         if bad:
             raise SystemExit(f"KONTROLA: po zapisie stan nadal < {TARGET} dla {bad}")
         print("KONTROLA po zapisie: OK, wszystkie uzupelnione produkty maja >=", TARGET)
