@@ -1,0 +1,25 @@
+name: Stany 100 w BaseLinker (nie dopuscic do zera)
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "1 = zapis, 0 = tylko raport (dry-run)"
+        required: false
+        default: "0"
+      only_skus:
+        description: "Tylko te SKU przez przecinek (puste = wszystkie)"
+        required: false
+        default: ""
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Keep stock
+        env:
+          BLT: ${{ secrets.BASELINKER_TOKEN }}
+          APPLY: ${{ github.event.inputs.apply || '1' }}
+          ONLY_SKUS: ${{ github.event.inputs.only_skus || '' }}
+          TARGET: "100"
+          SKIP_SKUS: ""
+        run: python3 keep_stock.py
