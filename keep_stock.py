@@ -33,6 +33,20 @@ def call(method, params):
     return r
 
 
+def build_items(stock, names, wh):
+    """(id do zapisu, sku/opis, nazwa, stan) - dla wariantow osobna pozycja na wariant."""
+    items = []
+    for pid, p in stock.items():
+        sku, name = names.get(pid, ("?", "?"))
+        variants = p.get("variants") or {}
+        if variants:
+            for vid, vst in variants.items():
+                items.append((str(vid), f"{sku or pid}/WAR.{vid}", name, int(float((vst or {}).get(wh, 0)))))
+        else:
+            items.append((pid, sku, name, int(float((p.get("stock") or {}).get(wh, 0)))))
+    return items
+
+
 def main():
     invs = call("getInventories", {})["inventories"]
     if len(invs) != 1:
@@ -70,20 +84,13 @@ def main():
         page += 1
 
     upd, zero, skipped, ok = {}, [], [], 0
-    items = []  # (id do zapisu, sku/opis, nazwa, stan)
-    for pid, p in stock.items():
-        sku, name = names.get(pid, ("?", "?"))
-        variants = p.get("variants") or {}
-        if variants:
-            for vid, vst in variants.items():
-                items.append((str(vid), f"{sku or pid}/war.{vid}", name, int(float((vst or {}).get(wh, 0)))))
-        else:
-            items.append((pid, sku, name, int(float((p.get("stock") or {}).get(wh, 0)))))
+    items = build_items(stock, names, wh)
 
     for pid, sku, name, q in items:
-        if ONLY and sku not in ONLY:
+        base_sku = sku.split("/WAR.")[0]  # wariant: filtr po SKU rodzica
+        if ONLY and sku not in ONLY and base_sku not in ONLY:
             continue
-        if sku in SKIP:
+        if sku in SKIP or base_sku in SKIP:
             skipped.append(f"{sku} na liscie SKIP")
             continue
         if q <= 0:

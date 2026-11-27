@@ -53,12 +53,27 @@ def orders_from_base():
         while True:
             r = bl("getOrders", {"status_id": sid, "date_confirmed_from": frm, "get_unconfirmed_orders": False})
             batch = r.get("orders", [])
+            new = [o for o in batch if o["order_id"] not in out]
             for o in batch:
                 out[o["order_id"]] = o
             if len(batch) < 100:
                 break
-            frm = max(o["date_confirmed"] for o in batch) + 1
+            # bez +1: zamowienia z ta sama sekunda date_confirmed na granicy strony nie gina
+            nf = max(int(o["date_confirmed"]) for o in batch)
+            frm = nf if new and nf > frm else nf + 1
     return list(out.values())
+
+FS_RE = re.compile(r"^FS/\d+/\d{2}/\d{4}$")
+
+def invoice_number_problem(num, o):
+    """Wysylamy tylko fakture Optimy (FS/nr/mm/rrrr) zgodna z Pole dodatkowe 2.
+    Inny numer (np. 332/10/2026, 228/11/2026) = blankiet Base albo FakturaXL - nie wysylac."""
+    if not FS_RE.match(num or ""):
+        return f"numer '{num}' to nie FS Optimy (blankiet Base / FakturaXL?) - nie wysylam"
+    pole2 = (o.get("extra_field_2") or "").strip()
+    if pole2 and pole2 != num:
+        return f"numer PDF {num} != Pole dodatkowe 2 '{pole2}' - nie wysylam"
+    return ""
 
 def market_of(o):
     src = f"{o.get('order_source','')} {o.get('order_source_info','')}".lower()
@@ -124,7 +139,7 @@ def main():
             continue
         m = MARKETS[n]
         ext = (o.get("external_order_id") or "").strip()
-        tag = f"[{n}] Base {oid} / {ext or '?'} / {o.get('invoice_fullname') or o.get('delivery_fullname')}"
+        tag = f"[{n}] Base {oid} / {ext or '?'}"  # bez nazwiska: logi repo sa publiczne
         if not ext:
             print(f"{tag}: brak numeru marketplace - pomijam"); continue
         docs, err = existing_docs(m, ext)
@@ -139,6 +154,9 @@ def main():
             print(f"{tag}: blad pobrania faktury z Base: {e}"); continue
         if not pdf:
             print(f"{tag}: {err} ({num or '-'})"); continue
+        bad = invoice_number_problem(num, o)
+        if bad:
+            print(f"{tag}: {bad}"); continue
         fname = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{num}.pdf")
         if not APPLY:
             print(f"{tag}: DO WYSLANIA {num} ({len(pdf)} B), dokumenty w zamowieniu: {[d.get('type') for d in docs]}")

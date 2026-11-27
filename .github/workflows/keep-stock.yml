@@ -12,9 +12,16 @@ on:
         description: "Tylko te SKU przez przecinek (puste = wszystkie)"
         required: false
         default: ""
+permissions:
+  contents: read
+# jeden przebieg naraz (cron-job.org + harmonogram GitHub moga wystartowac prawie razem)
+concurrency:
+  group: keep-stock
+  cancel-in-progress: false
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: Keep stock

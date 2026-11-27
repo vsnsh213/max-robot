@@ -1,0 +1,14 @@
+name: Testy (bez sieci)
+on:
+  pull_request:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+      - name: Unit tests (API podmienione, bez sekretow)
+        run: python3 -m unittest discover -s tests -v
