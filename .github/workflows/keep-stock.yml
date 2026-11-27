@@ -1,5 +1,7 @@
 name: Stany 100 w BaseLinker (nie dopuscic do zera)
 on:
+  schedule:
+    - cron: "17 */3 * * *"
   workflow_dispatch:
     inputs:
       apply:
