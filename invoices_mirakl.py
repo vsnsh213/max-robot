@@ -75,7 +75,9 @@ def invoice_pdf(order_id):
     f = bl("getInvoiceFile", {"invoice_id": inv["invoice_id"], "get_external": True})
     b64 = f.get("invoice", "")
     if b64.startswith("data:"):
-        b64 = b64.split(",", 1)[1]
+        b64 = b64[5:]
+        if "," in b64[:100]:
+            b64 = b64.split(",", 1)[1]
     pdf = base64.b64decode(b64) if b64 else b""
     num = f.get("invoice_number") or inv.get("number") or str(inv["invoice_id"])
     if not pdf.startswith(b"%PDF"):
@@ -131,7 +133,10 @@ def main():
         have = [d.get("file_name") for d in docs if d.get("type") == TYPE_CODE or "invoice" in str(d.get("type", "")).lower()]
         if have:
             print(f"{tag}: faktura juz jest {have} - pomijam"); continue
-        pdf, num, err = invoice_pdf(o["order_id"])
+        try:
+            pdf, num, err = invoice_pdf(o["order_id"])
+        except Exception as e:
+            print(f"{tag}: blad pobrania faktury z Base: {e}"); continue
         if not pdf:
             print(f"{tag}: {err} ({num or '-'})"); continue
         fname = re.sub(r"[^A-Za-z0-9_.-]", "_", f"{num}.pdf")
