@@ -1,0 +1,31 @@
+name: Faktury do Empik i Media Expert
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: "1 = wysylka, 0 = tylko raport (dry-run)"
+        default: "0"
+      only_orders:
+        description: "Tylko te ID zamowien z Base przez przecinek (puste = wszystkie)"
+        default: ""
+      max_uploads:
+        description: "Maks. ile faktur wyslac w jednym uruchomieniu"
+        default: "1"
+      markets:
+        description: "empik,mediaexpert"
+        default: "empik,mediaexpert"
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Faktury Mirakl
+        env:
+          BLT: ${{ secrets.BASELINKER_TOKEN }}
+          EMPIK_API_KEY: ${{ secrets.EMPIK_API_KEY }}
+          MEDIAEXPERT_API_KEY: ${{ secrets.MEDIAEXPERT_API_KEY }}
+          APPLY: ${{ inputs.apply }}
+          ONLY_ORDERS: ${{ inputs.only_orders }}
+          MAX_UPLOADS: ${{ inputs.max_uploads }}
+          MARKETS: ${{ inputs.markets }}
+        run: python3 invoices_mirakl.py
