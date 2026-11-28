@@ -142,7 +142,7 @@ class TestPagination(unittest.TestCase):
 # ---------------------------------------------------------------- fix_vat main: bledy API, dane osobowe w logu
 class TestFixVatMain(unittest.TestCase):
     def test_api_error_on_one_order_does_not_stop_others_and_fails_run(self):
-        orders = [order(order_id=1), order(order_id=2)]
+        orders = [order(order_id=1, order_status_id=166441), order(order_id=2, order_status_id=166441)]
 
         def h(method, params):
             if method == "getOrders":

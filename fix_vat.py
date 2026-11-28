@@ -9,6 +9,11 @@ Dla zamowien w statusie STATUS_ID (domyslnie 166441 'Do zafakturowania'):
   - brak nazwy nabywcy w danych do faktury: kopiowane z adresu dostawy (imie/firma/adres)
   - Nalokalu, grzejniki.pl, Patroniak (egrzejniki), Gardhill, zamowienia BL Connect i zamowienia o wartosci 0: przeniesione do statusu
     'Fakturowanie zbiorcze' (faktura zbiorcza na koniec miesiaca, recznie)
+Zamowienie juz zabrane przez OpSync ("[ZAIMPORTOWANE]" w Pole dodatkowe 1 albo numer FS w Pole dodatkowe 2)
+jest pomijane: zmiana po imporcie do Optimy rozjechalaby Base z FS. Przed zapisem zamowienie jest czytane
+ponownie, zeby nie zapisac, jesli OpSync zabral je w trakcie przebiegu.
+Inne wpisy w Pole 1/2 (Amazon: nr zamowienia + "Fulfillment: MFN", Kaufland: "fulfilled_by_merchant",
+notatki biura) NIE blokuja korekty - to nie sa znaczniki OpSync.
 Cena brutto pozycji NIE jest zmieniana. Pozycje o cenie 0 sa pomijane.
 Domyslnie tryb 'dry-run' (tylko raport). Zapis: APPLY=1.
 """
@@ -121,6 +126,30 @@ def fetch_orders(status_id, since, key="date_add", param="date_from", unconfirme
         d = nd if new and nd > d else nd + 1  # zabezpieczenie przed petla
     return list(out.values())
 
+# znaczniki OpSync: Pole 1 "[ZAIMPORTOWANE]", Pole 2 numer FS (FS/12/11/2026, tez stary format FS/1/2026)
+OPSYNC_FS_RE = re.compile(r"\bFS/\d+/(\d+/)?\d{4}\b")
+
+def taken_by_opsync(o):
+    """True, jesli OpSync juz zaimportowal zamowienie do Optimy (nie wolno go zmieniac)."""
+    p1 = str(o.get("extra_field_1") or "").upper()
+    p2 = str(o.get("extra_field_2") or "")
+    return "ZAIMPORTOWANE" in p1 or bool(OPSYNC_FS_RE.search(p2))
+
+def fresh_order(order_id):
+    """Swieze dane zamowienia tuz przed zapisem (None, jesli nie ma)."""
+    for x in call("getOrders", {"order_id": order_id, "get_unconfirmed_orders": True}).get("orders", []):
+        if x["order_id"] == order_id:
+            return x
+    return None
+
+def still_safe(o):
+    """Ponowny odczyt przed zapisem: nadal w statusie STATUS_ID i nie zabrane przez OpSync."""
+    f = fresh_order(o["order_id"])
+    if f is None or int(f.get("order_status_id", STATUS_ID)) != STATUS_ID or taken_by_opsync(f):
+        print(f"order {o['order_id']}: POMINIETO - w trakcie przebiegu zabrane przez OpSync lub zmieniony status", flush=True)
+        return False
+    return True
+
 def mask(upd):
     """Do logu (repo publiczne!) tylko nazwy pol, bez danych osobowych."""
     return sorted(upd)
@@ -142,26 +171,29 @@ def main():
         sys.exit(f"Bledy w zamowieniach: {errors}")
 
 def process_order(o):
-    changes = 0
+    if taken_by_opsync(o):
+        print(f"order {o['order_id']}: POMINIETO - juz zaimportowane przez OpSync (Pole 1/2), bez zmian", flush=True)
+        return 0
     if is_monthly(o):
         print(f"order {o['order_id']} -> status 'Fakturowanie zbiorcze'", flush=True)
-        if APPLY:
+        if APPLY and still_safe(o):
             call("setOrderStatus", {"order_id": o["order_id"], "status_id": MONTHLY_STATUS_ID})
         return 1
     upd = fill_invoice_data(o)
-    if upd:
-        print(f"order {o['order_id']}: brak nabywcy -> kopiuje z dostawy pola {mask(upd)}", flush=True)
-        changes += 1
-        if APPLY:
-            call("setOrderFields", dict(order_id=o["order_id"], **upd))
     if eu_firm_without_vat_id(o):
         print(f"order {o['order_id']}: UWAGA firma z UE bez numeru VAT-UE (prefiks kraju) - 0% WDT watpliwe, sprawdzic", flush=True)
     # stawka liczona z danych PRZED skopiowaniem nabywcy: firma z adresu dostawy nie ma NIP,
     # wiec dla niej poprawna jest stawka jak dla osoby prywatnej (OSS), nie WDT 0%
-    for p, t in vat_changes(o):
+    vat = vat_changes(o)
+    if upd:
+        print(f"order {o['order_id']}: brak nabywcy -> kopiuje z dostawy pola {mask(upd)}", flush=True)
+    for p, t in vat:
         print(f"order {o['order_id']} {o['delivery_country_code']} {p['sku']}: VAT {p['tax_rate']} -> {t}", flush=True)
-        changes += 1
-        if APPLY:
+    changes = (1 if upd else 0) + len(vat)
+    if APPLY and changes and still_safe(o):
+        if upd:
+            call("setOrderFields", dict(order_id=o["order_id"], **upd))
+        for p, t in vat:
             call("setOrderProductFields", {"order_id": o["order_id"], "order_product_id": p["order_product_id"], "tax_rate": t})
     return changes
 
