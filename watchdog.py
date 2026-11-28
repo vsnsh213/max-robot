@@ -46,15 +46,35 @@ def env_ids(name):
 
 # ---------- API (tylko odczyt) ----------
 
+RETRIES = 3          # proby na kazde zapytanie do Base / GitHub
+RETRY_PAUSE = 10     # sekund miedzy probami
+
+
+def with_retry(label, fn):
+    """Do RETRIES prob z przerwa RETRY_PAUSE s (chwilowy blad sieci = nie alarm).
+    Dopiero po ostatniej nieudanej probie wyjatek idzie dalej."""
+    for attempt in range(1, RETRIES + 1):
+        try:
+            return fn()
+        except Exception as e:
+            if attempt == RETRIES:
+                raise
+            print(f"[retry] {label}: proba {attempt}/{RETRIES} nieudana ({type(e).__name__}), ponawiam za {RETRY_PAUSE} s")
+            time.sleep(RETRY_PAUSE)
+
+
 def bl(method, params):
     if not method.startswith("get"):  # straznik nigdy nic nie zapisuje
         raise RuntimeError(f"zablokowano metode zapisu: {method}")
     data = urllib.parse.urlencode({"method": method, "parameters": json.dumps(params)}).encode()
-    req = urllib.request.Request(BASE_URL, data=data, headers={"X-BLToken": os.environ["BLT"]})
-    r = json.load(urllib.request.urlopen(req, timeout=60))
-    if r.get("status") != "SUCCESS":
-        raise RuntimeError(f"Base {method}: {r.get('error_code')} {r.get('error_message')}")
-    return r
+
+    def once():
+        req = urllib.request.Request(BASE_URL, data=data, headers={"X-BLToken": os.environ["BLT"]})
+        r = json.load(urllib.request.urlopen(req, timeout=60))
+        if r.get("status") != "SUCCESS":
+            raise RuntimeError(f"Base {method}: {r.get('error_code')} {r.get('error_message')}")
+        return r
+    return with_retry(f"Base {method}", once)
 
 
 def gh(path):
@@ -62,8 +82,11 @@ def gh(path):
     tok = os.environ.get("GITHUB_TOKEN")
     if tok:
         headers["Authorization"] = f"Bearer {tok}"
-    req = urllib.request.Request(GH_API + path, headers=headers)  # tylko GET
-    return json.load(urllib.request.urlopen(req, timeout=30))
+
+    def once():
+        req = urllib.request.Request(GH_API + path, headers=headers)  # tylko GET
+        return json.load(urllib.request.urlopen(req, timeout=30))
+    return with_retry("GitHub " + path.split("?")[0].rsplit("/", 2)[-2], once)
 
 
 # ---------- pobieranie danych ----------

@@ -187,5 +187,86 @@ class ReportAndMain(unittest.TestCase):
         self.assertEqual(len(errors), 6)
 
 
+class Retries(unittest.TestCase):
+    """Zapytania do Base / GitHub: do 3 prob z przerwa, dopiero potem blad."""
+
+    class Resp:
+        def __init__(self, body):
+            self.body = body
+        def read(self, *a):
+            return self.body
+        def __enter__(self):
+            return self
+        def __exit__(self, *a):
+            return False
+
+    def _urlopen(self, outcomes):
+        seq = list(outcomes)
+        calls = []
+        def fake(req, timeout=None, **k):
+            calls.append(req.full_url)
+            item = seq.pop(0)
+            if isinstance(item, Exception):
+                raise item
+            return self.Resp(item)
+        return fake, calls
+
+    def _patch(self, outcomes):
+        fake, calls = self._urlopen(outcomes)
+        sleeps = []
+        p1 = mock.patch.object(wd.urllib.request, "urlopen", side_effect=fake)
+        p2 = mock.patch.object(wd.time, "sleep", side_effect=lambda s: sleeps.append(s))
+        p3 = mock.patch("sys.stdout")
+        return p1, p2, p3, calls, sleeps
+
+    def test_github_first_fails_second_ok(self):
+        ok = b'{"workflow_runs": [{"updated_at": "2026-11-28T11:14:30Z"}]}'
+        p1, p2, p3, calls, sleeps = self._patch([OSError("timed out"), ok])
+        with p1, p2, p3:
+            self.assertEqual(wd.last_success_time("r", "keep-stock.yml"), 1795864470)
+        self.assertEqual((len(calls), sleeps), (2, [wd.RETRY_PAUSE]))
+
+    def test_base_first_fails_second_ok(self):
+        ok = b'{"status": "SUCCESS", "products": {}}'
+        p1, p2, p3, calls, sleeps = self._patch([OSError("reset"), ok])
+        with p1, p2, p3:
+            self.assertEqual(wd.fetch_stock(6095), {})
+        self.assertEqual((len(calls), sleeps), (2, [10]))
+
+    def test_base_error_status_retried(self):
+        bad = b'{"status": "ERROR", "error_code": "X", "error_message": "chwilowy"}'
+        ok = b'{"status": "SUCCESS", "products": {}}'
+        p1, p2, p3, calls, sleeps = self._patch([bad, bad, ok])
+        with p1, p2, p3:
+            self.assertEqual(wd.fetch_stock(6095), {})
+        self.assertEqual(len(calls), 3)
+
+    def test_three_failures_go_to_watchdog_errors(self):
+        # bezposrednio: 3 nieudane proby -> wyjatek, potem trafia do sekcji bledow
+        p1, p2, p3, calls, sleeps = self._patch([OSError("timed out")] * 3)
+        with p1, p2, p3:
+            with self.assertRaises(OSError):
+                wd.gh("/repos/r/actions/workflows/keep-stock.yml/runs")
+        self.assertEqual((len(calls), sleeps), (3, [10, 10]))
+
+        p1, p2, p3, calls, sleeps = self._patch([OSError("timed out")] * 3 +
+                                                 [b'{"workflow_runs": [{"updated_at": "2033-05-18T03:33:20Z"}]}'])
+        with p1, p2, p3, \
+             mock.patch.object(wd, "fetch_stock", return_value={}), \
+             mock.patch.object(wd, "fetch_orders", return_value=[]), \
+             mock.patch.object(wd, "fetch_external_invoice_orders", return_value=set()):
+            secs = wd.collect(NOW)
+        errors = [lines for title, lines, *_ in secs if title == "Сторож не смог проверить"][0]
+        self.assertEqual(len(errors), 1)
+        self.assertIn("GitHub keep-stock", errors[0])
+
+    def test_write_method_not_retried(self):
+        p1, p2, p3, calls, sleeps = self._patch([])
+        with p1, p2, p3:
+            with self.assertRaises(RuntimeError):
+                wd.bl("setOrderStatus", {})
+        self.assertEqual((calls, sleeps), ([], []))
+
+
 if __name__ == "__main__":
     unittest.main()
