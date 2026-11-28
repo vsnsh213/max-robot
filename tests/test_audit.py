@@ -284,3 +284,70 @@ import unittest.mock  # noqa: E402
 
 if __name__ == "__main__":
     unittest.main()
+
+
+# ---------------------------------------------------------------- invoices_mirakl: SKIP_ORDERS + harmonogram
+class TestMiraklSkipOrders(unittest.TestCase):
+    def run_main(self, skip, apply=True):
+        ids = {82930642: "FS/192/11/2026", 78403761: "FS/1/10/2026", 79373568: "FS/2/10/2026", 82361962: "FS/126/11/2026"}
+        orders = [{"order_id": oid, "date_confirmed": 10 + i, "order_source": "empik", "order_source_info": "",
+                   "external_order_id": f"EXT-{oid}", "invoice_fullname": "X", "extra_field_2": fs}
+                  for i, (oid, fs) in enumerate(ids.items())]
+        pdf = base64.b64encode(b"%PDF-1.4").decode()
+        uploads, uploaded_docs = [], {}
+
+        def bl(method, params):
+            if method == "getOrders":
+                return {"orders": orders}
+            if method == "getInvoices":
+                return {"invoices": [{"invoice_id": params["order_id"], "date_add": 1}]}
+            if method == "getInvoiceFile":
+                return {"invoice": pdf, "invoice_number": ids[params["invoice_id"]]}
+            raise AssertionError(method)
+
+        def mk(m, path, method="GET", body=None, ctype=None):
+            if path == "/api/documents":
+                return 200, {"documents": [{"code": "CUSTOMER_INVOICE"}]}
+            if method == "POST":
+                ext = path.split("/")[3]
+                uploads.append(ext)
+                uploaded_docs[ext] = [{"file_name": ids[int(ext[4:])].replace("/", "_") + ".pdf", "type": "CUSTOMER_INVOICE"}]
+                return 200, {"errors_count": 0}
+            ext = path.split("order_ids=")[1]
+            return 200, {"order_documents": uploaded_docs.get(ext, [])}
+        markets = {"empik": dict(im.MARKETS["empik"], key="k")}
+        out = io.StringIO()
+        with unittest.mock.patch.object(im, "bl", bl), unittest.mock.patch.object(im, "mk", mk), \
+                unittest.mock.patch.object(im, "MARKETS", markets), unittest.mock.patch.object(im, "WHICH", "empik"), \
+                unittest.mock.patch.object(im, "APPLY", apply), unittest.mock.patch.object(im, "MAX_UPLOADS", 5), \
+                unittest.mock.patch.object(im, "SKIP", set(skip)), unittest.mock.patch.object(im, "ONLY", set()), \
+                contextlib.redirect_stdout(out):
+            rc = im.main()
+        return rc, uploads, out.getvalue()
+
+    def test_skipped_orders_never_uploaded(self):
+        rc, uploads, log = self.run_main({"82930642", "78403761", "79373568"})
+        self.assertEqual(rc, 0)
+        self.assertEqual(uploads, ["EXT-82361962"])  # tylko nie-wstrzymane
+        for oid in ("82930642", "78403761", "79373568"):
+            self.assertIn(f"Base {oid}: na liscie SKIP_ORDERS", log)
+
+    def test_without_skip_all_uploaded(self):
+        rc, uploads, _ = self.run_main(set())
+        self.assertEqual(len(uploads), 4)
+
+    def test_skip_env_parsing(self):
+        import importlib
+        with unittest.mock.patch.dict(os.environ, {"SKIP_ORDERS": " 82930642, 78403761 ,79373568,"}):
+            mod = importlib.reload(im)
+            self.assertEqual(mod.SKIP, {"82930642", "78403761", "79373568"})
+        importlib.reload(im)
+
+    def test_workflow_schedule_defaults(self):
+        # przy harmonogramie inputs sa puste - bez || robot chodzilby na sucho (APPLY puste = dry-run)
+        wf = open(os.path.join(os.path.dirname(__file__), "..", ".github", "workflows", "invoices-mirakl.yml")).read()
+        self.assertIn('cron: "20 8 * * *"', wf)
+        self.assertIn("APPLY: ${{ inputs.apply || '1' }}", wf)
+        self.assertIn("MAX_UPLOADS: ${{ inputs.max_uploads || '5' }}", wf)
+        self.assertIn("MARKETS: ${{ inputs.markets || 'empik,mediaexpert' }}", wf)
+        self.assertIn("SKIP_ORDERS: ${{ inputs.skip_orders || '82930642,78403761,79373568' }}", wf)

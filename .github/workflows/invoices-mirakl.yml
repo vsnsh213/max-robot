@@ -1,5 +1,8 @@
 name: Faktury do Empik i Media Expert
 on:
+  schedule:
+    # raz dziennie 09:20 czasu warszawskiego zimą (CET = UTC+1). Latem (CEST) bedzie 10:20.
+    - cron: "20 8 * * *"
   workflow_dispatch:
     inputs:
       apply:
@@ -14,6 +17,9 @@ on:
       markets:
         description: "empik,mediaexpert"
         default: "empik,mediaexpert"
+      skip_orders:
+        description: "Nie wysylac do tych ID z Base (puste = domyslna lista wstrzymanych)"
+        default: ""
 permissions:
   contents: read
 # jeden przebieg naraz (cron-job.org + harmonogram GitHub moga wystartowac prawie razem)
@@ -31,8 +37,11 @@ jobs:
           BLT: ${{ secrets.BASELINKER_TOKEN }}
           EMPIK_API_KEY: ${{ secrets.EMPIK_API_KEY }}
           MEDIAEXPERT_API_KEY: ${{ secrets.MEDIAEXPERT_API_KEY }}
-          APPLY: ${{ inputs.apply }}
-          ONLY_ORDERS: ${{ inputs.only_orders }}
-          MAX_UPLOADS: ${{ inputs.max_uploads }}
-          MARKETS: ${{ inputs.markets }}
+          # przy uruchomieniu z harmonogramu inputs sa puste -> wartosci domyslne po ||
+          APPLY: ${{ inputs.apply || '1' }}
+          ONLY_ORDERS: ${{ inputs.only_orders || '' }}
+          MAX_UPLOADS: ${{ inputs.max_uploads || '5' }}
+          MARKETS: ${{ inputs.markets || 'empik,mediaexpert' }}
+          # wstrzymane do odpowiedzi Lechy: 82930642 (FS/192), 78403761 (332/10/2026 - nie FS), 79373568 (brak faktury)
+          SKIP_ORDERS: ${{ inputs.skip_orders || '82930642,78403761,79373568' }}
         run: python3 invoices_mirakl.py
