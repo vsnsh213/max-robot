@@ -10,6 +10,14 @@ import watchdog as wd
 
 NOW = 2_000_000_000
 H = 3600
+# znaczniki czasu (UTC) dla okna porannego w Warszawie, zima = UTC+1, lato = UTC+2
+W_0859 = 1795852740   # 28.11.2026 08:59 Warszawa
+W_0900 = 1795852800   # 09:00
+MORNING = 1795858800  # 10:40 - zimowy przebieg cron "40 */3" (09:40 UTC) wpada w okno
+W_1159 = 1795863540   # 11:59
+W_1200 = 1795863600   # 12:00
+NIGHT = 1795826400    # 01:40
+SUMMER_1040 = 1782376800  # 25.06.2026 10:40 Warszawa (UTC+2)
 
 
 def o(oid, status, age, **kw):
@@ -101,24 +109,72 @@ class ReportAndMain(unittest.TestCase):
         with self.assertRaises(RuntimeError):
             wd.bl("setOrderStatus", {})
 
-    def _run_main(self, sections, send):
+    def _run_main(self, sections, send, now=None):
         sent = []
         env = {"SEND_MAIL": send, "SMTP_USER": "u", "SMTP_PASS": "p"}
         with mock.patch.object(wd, "collect", return_value=sections), \
-             mock.patch.object(wd, "send_mail", side_effect=lambda t, n: sent.append(n)), \
+             mock.patch.object(wd, "send_mail", side_effect=lambda t, n: sent.append((n, t))), \
              mock.patch.dict(os.environ, env), mock.patch("sys.stdout"):
-            rc = wd.main()
+            rc = wd.main(now or NIGHT)
         return rc, sent
 
     def test_all_ok_no_mail_green(self):
-        self.assertEqual(self._run_main([("a", [], "x")], "1"), (0, []))
+        self.assertEqual(self._run_main([("a", [], "x", wd.URGENT)], "1"), (0, []))
 
     def test_problem_one_mail_red(self):
-        rc, sent = self._run_main([("a", ["1"], "x"), ("b", ["2", "3"], "y"), ("c", [], "z")], "1")
-        self.assertEqual((rc, sent), (1, [2]))
+        rc, sent = self._run_main([("a", ["1"], "x", wd.URGENT), ("b", ["2", "3"], "y", wd.URGENT),
+                                   ("c", [], "z", wd.URGENT)], "1")
+        self.assertEqual((rc, [n for n, _ in sent]), (1, [2]))
 
     def test_dry_run_no_mail_but_red(self):
-        self.assertEqual(self._run_main([("a", ["1"], "x")], "0"), (1, []))
+        self.assertEqual(self._run_main([("a", ["1"], "x", wd.URGENT)], "0"), (1, []))
+
+    # --- okno poranne 09:00-11:59 Europe/Warsaw ---
+    def test_is_morning_boundaries(self):
+        self.assertFalse(wd.is_morning(W_0859))
+        self.assertTrue(wd.is_morning(W_0900))
+        self.assertTrue(wd.is_morning(MORNING))
+        self.assertTrue(wd.is_morning(W_1159))
+        self.assertFalse(wd.is_morning(W_1200))
+        self.assertTrue(wd.is_morning(SUMMER_1040))  # czas letni (UTC+2)
+
+    def test_morning_only_problem_not_morning_green_no_mail(self):
+        rc, sent = self._run_main([("Nowe", ["84114540: 29 ч"], "x", wd.MORNING)], "1", NIGHT)
+        self.assertEqual((rc, sent), (0, []))
+
+    def test_morning_only_problem_in_morning_red_mail(self):
+        rc, sent = self._run_main([("Nowe", ["84114540: 29 ч"], "x", wd.MORNING)], "1", MORNING)
+        self.assertEqual(rc, 1)
+        self.assertEqual(len(sent), 1)
+        self.assertIn("84114540", sent[0][1])
+
+    def test_urgent_problem_not_morning_mail_without_morning_items(self):
+        secs = [("Остаток", ["BE20406: 10 шт"], "x", wd.URGENT), ("Nowe", ["84114540: 29 ч"], "y", wd.MORNING)]
+        rc, sent = self._run_main(secs, "1", NIGHT)
+        self.assertEqual((rc, len(sent)), (1, 1))
+        self.assertIn("BE20406", sent[0][1])
+        self.assertNotIn("84114540", sent[0][1])
+
+    def test_urgent_and_morning_in_morning_one_mail_with_both(self):
+        secs = [("Остаток", ["BE20406: 10 шт"], "x", wd.URGENT), ("Nowe", ["84114540: 29 ч"], "y", wd.MORNING)]
+        rc, sent = self._run_main(secs, "1", MORNING)
+        self.assertEqual((rc, len(sent), sent[0][0]), (1, 1, 2))
+        self.assertIn("BE20406", sent[0][1])
+        self.assertIn("84114540", sent[0][1])
+
+    def test_collect_kinds(self):
+        def boom(*a, **k):
+            raise RuntimeError("siec")
+        with mock.patch.object(wd, "last_success_time", side_effect=boom), \
+             mock.patch.object(wd, "bl", side_effect=boom), \
+             mock.patch.object(wd, "fetch_stock", side_effect=boom):
+            kinds = {title: kind for title, _, _, kind in wd.collect(NOW)}
+        self.assertEqual(kinds["Роботы не запускаются"], wd.URGENT)
+        self.assertEqual(kinds["Сторож не смог проверить"], wd.URGENT)
+        self.assertEqual(kinds[f"Остаток в Base ниже {wd.STOCK_MIN}"], wd.URGENT)
+        self.assertEqual(kinds["Заказ висит в «Do zafakturowania» дольше 1 ч"], wd.MORNING)
+        self.assertEqual(kinds["FS есть в Pole 2, а PDF Optima в заказе нет дольше 2 ч"], wd.MORNING)
+        self.assertEqual(kinds["Оплаченные заказы в «Nowe» дольше 24 ч (для Свята)"], wd.MORNING)
 
     def test_check_error_reported_not_crash(self):
         def boom(*a, **k):
@@ -127,7 +183,7 @@ class ReportAndMain(unittest.TestCase):
              mock.patch.object(wd, "bl", side_effect=boom), \
              mock.patch.object(wd, "fetch_stock", side_effect=boom):
             secs = wd.collect(NOW)
-        errors = [lines for title, lines, _ in secs if title == "Сторож не смог проверить"][0]
+        errors = [lines for title, lines, *_ in secs if title == "Сторож не смог проверить"][0]
         self.assertEqual(len(errors), 6)
 
 

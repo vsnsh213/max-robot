@@ -1,5 +1,7 @@
 name: Straznik (watchdog) - stany i faktury
 # Tylko odczyt Base API i GitHub API. Problem = jeden e-mail na biuro@ + czerwony przebieg.
+# Pilne (roboty, stan < 50, blad straznika) - kazdy przebieg. Poranne (Do zafakturowania, FS bez PDF,
+# Nowe) - do e-maila tylko w przebiegu 09:00-11:59 Warszawa (cron 40 */3 UTC: zima 10:40, lato 11:40).
 on:
   schedule:
     - cron: "40 */3 * * *"

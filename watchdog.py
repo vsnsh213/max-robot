@@ -9,13 +9,18 @@ Sprawdza, czy stany i faktury nie zepsuly sie po cichu:
   5. FS w Pole dodatkowe 2 bez PDF (faktura zewnetrzna) dluzej niz 2 h
   6. oplacone zamowienie w "Nowe" (37713) dluzej niz 24 h (lista dla Swiata)
 
-Jesli cos jest nie tak: jeden e-mail na przebieg (SEND_MAIL=1) i kod wyjscia 1 (czerwony przebieg).
+Pilne (kazdy przebieg): roboty nie startuja, stan < 50, blad samego straznika.
+Poranne (4, 5, 6): do e-maila tylko w przebiegu 09:00-11:59 czasu warszawskiego, w pozostalych tylko log.
+Jesli jest co wyslac: jeden e-mail na przebieg (SEND_MAIL=1) i kod wyjscia 1 (czerwony przebieg).
+Tylko poranne poza oknem porannym: log, kod 0.
 Wszystko w porzadku: brak e-maila, kod 0.
 W logu i w e-mailu tylko numery zamowien, SKU i ID - bez imion, adresow i e-maili klientow (repo publiczne).
 """
 import os, re, sys, json, time, calendar, smtplib, urllib.request, urllib.parse
 from email.message import EmailMessage
 from email.utils import formatdate
+from datetime import datetime
+from zoneinfo import ZoneInfo
 
 BASE_URL = "https://api.baselinker.com/connector.php"
 GH_API = "https://api.github.com"
@@ -30,6 +35,8 @@ DO_ZAF_MAX_AGE = 3600
 FS_NO_PDF_MAX_AGE = 2 * 3600
 NOWE_MAX_AGE = 24 * 3600
 LOOKBACK_DAYS = int(os.environ.get("LOOKBACK_DAYS", "14"))
+URGENT, MORNING = "urgent", "morning"
+MORNING_HOURS = range(9, 12)  # 09:00-11:59 Europe/Warsaw
 FS_RE = re.compile(r"^\s*FS/\d+/\d+/\d{4}\s*$")
 
 
@@ -217,9 +224,9 @@ def check_nowe_paid(orders, now, max_age=NOWE_MAX_AGE):
 # ---------- raport ----------
 
 def build_report(sections):
-    """sections: lista (tytul, [linie], co zrobic). Puste sekcje pomijane. Zwraca tekst albo ''."""
+    """sections: lista (tytul, [linie], co zrobic, rodzaj). Puste sekcje pomijane. Zwraca tekst albo ''."""
     parts = []
-    for title, lines, todo in sections:
+    for title, lines, todo, *_ in sections:
         if not lines:
             continue
         parts.append(f"❗ {title}\n" + "\n".join(f"  - {l}" for l in lines) + f"\n  Что сделать: {todo}")
@@ -259,14 +266,14 @@ def collect(now):
     fv = safe("GitHub fix-vat", lambda: check_run_age("Робот НДС (fix-vat)",
               last_success_time(repo, "fix-vat.yml"), FIX_VAT_MAX_AGE, now))
     sections.append(("Роботы не запускаются", (ks or []) + (fv or []),
-                     "проверить cron-job.org (Robot VAT / Robot Stany 100) и вкладку Actions в GitHub"))
+                     "проверить cron-job.org (Robot VAT / Robot Stany 100) и вкладку Actions в GitHub", URGENT))
 
     def stock_check():
         bad = check_stock(fetch_stock(inv_id), STOCK_MIN)
         skus = fetch_skus(inv_id, {parent or iid for iid, parent, _ in bad}) if bad else {}
         return format_stock(bad, skus)
     sections.append((f"Остаток в Base ниже {STOCK_MIN}", safe("Base остатки", stock_check) or [],
-                     "проверить, пишет ли склад остатки и работает ли «Stany 100»; товар может выпасть из продажи"))
+                     "проверить, пишет ли склад остатки и работает ли «Stany 100»; товар может выпасть из продажи", URGENT))
 
     dz = safe("Base Do zafakturowania", lambda: check_do_zaf(
         fetch_orders({"status_id": STATUS_DO_ZAF, "date_from": now - 90 * 86400, "get_unconfirmed_orders": True},
@@ -274,7 +281,7 @@ def collect(now):
     sections.append(("Заказ висит в «Do zafakturowania» дольше 1 ч",
                      [f"{oid}: {hours(age)}, e-mail {'с @' if at else 'БЕЗ @ (OpSync падает на пустом/неверном e-mail)'}"
                       for oid, age, at in (dz or [])],
-                     "проверить e-mail и данные заказа; посмотреть журнал OpSync на сервере Optima"))
+                     "проверить e-mail и данные заказа; посмотреть журнал OpSync на сервере Optima", MORNING))
 
     def fs_check():
         since = now - LOOKBACK_DAYS * 86400
@@ -284,32 +291,52 @@ def collect(now):
     fs = safe("Base FS bez PDF", fs_check)
     sections.append(("FS есть в Pole 2, а PDF Optima в заказе нет дольше 2 ч",
                      [f"{oid}: {num}, {hours(age)}" for oid, num, age in (fs or [])],
-                     "Лёхе: проверить FS в Optima (KSeF/буфер) и почему OpSync не загрузил PDF"))
+                     "Лёхе: проверить FS в Optima (KSeF/буфер) и почему OpSync не загрузил PDF", MORNING))
 
     nw = safe("Base Nowe", lambda: check_nowe_paid(
         fetch_orders({"status_id": STATUS_NOWE, "date_from": now - 90 * 86400, "get_unconfirmed_orders": True},
                      "date_add"), now))
     sections.append(("Оплаченные заказы в «Nowe» дольше 24 ч (для Свята)",
                      [f"{oid}: {hours(age)}" for oid, age in (nw or [])],
-                     "перевести в «Do wysłania», чтобы склад их забрал"))
+                     "перевести в «Do wysłania», чтобы склад их забрал", MORNING))
 
     sections.append(("Сторож не смог проверить", errors,
-                     "посмотреть лог запуска watchdog в GitHub Actions"))
+                     "посмотреть лог запуска watchdog в GitHub Actions", URGENT))
     return sections
 
 
-def main():
-    now = int(time.time())
+def is_morning(now):
+    """Przebieg w oknie 09:00-11:59 czasu warszawskiego (niezaleznie od TZ maszyny)."""
+    return datetime.fromtimestamp(now, ZoneInfo("Europe/Warsaw")).hour in MORNING_HOURS
+
+
+def split_sections(sections, morning):
+    """Zwraca (do e-maila, tylko do logu). Poranne ida do e-maila tylko rano."""
+    mail, log_only = [], []
+    for sec in sections:
+        if not sec[1]:
+            continue
+        kind = sec[3] if len(sec) > 3 else URGENT
+        (mail if kind == URGENT or morning else log_only).append(sec)
+    return mail, log_only
+
+
+def main(now=None):
+    now = now or int(time.time())
     sections = collect(now)
-    text = build_report(sections)
-    if not text:
-        print("Все проверки в норме, письмо не отправляется.")
+    mail, log_only = split_sections(sections, is_morning(now))
+    if log_only:
+        print("Только в лог (утренние проверки, в письмо попадут в запуске 09:00–11:59):")
+        print(build_report(log_only))
+        print()
+    if not mail:
+        print("Срочных проблем нет, письмо не отправляется.")
         return 0
-    n = sum(1 for _, lines, _ in sections if lines)
+    text = build_report(mail)
     print(text)
     if os.environ.get("SEND_MAIL") == "1":
         try:
-            send_mail(text, n)
+            send_mail(text, len(mail))
             print(f"\nПисьмо отправлено на {os.environ.get('MAIL_TO', 'biuro@elna-service.pl')}.")
         except Exception as e:
             print(f"\nПИСЬМО НЕ ОТПРАВЛЕНО: {type(e).__name__}: {str(e)[:200]}")
