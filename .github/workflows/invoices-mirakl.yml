@@ -14,9 +14,16 @@ on:
       markets:
         description: "empik,mediaexpert"
         default: "empik,mediaexpert"
+permissions:
+  contents: read
+# jeden przebieg naraz (cron-job.org + harmonogram GitHub moga wystartowac prawie razem)
+concurrency:
+  group: invoices-mirakl
+  cancel-in-progress: false
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: Faktury Mirakl

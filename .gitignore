@@ -1,0 +1,6 @@
+# sekrety lokalne - NIGDY do repo (repo jest publiczne)
+.env
+.env.*
+*.pem
+__pycache__/
+*.pyc

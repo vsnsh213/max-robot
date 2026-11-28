@@ -8,9 +8,16 @@ on:
         description: "1 = zapis, 0 = tylko raport (dry-run)"
         required: false
         default: "1"
+permissions:
+  contents: read
+# jeden przebieg naraz (cron-job.org + harmonogram GitHub moga wystartowac prawie razem)
+concurrency:
+  group: fix-vat
+  cancel-in-progress: false
 jobs:
   run:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - name: Fix VAT

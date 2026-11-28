@@ -29,7 +29,9 @@ def call(method, params):
     return r
 
 MONTHLY_STATUS_ID = int(os.environ.get("MONTHLY_STATUS_ID", "170391"))
-MONTHLY_KEYS = ("nalokalu", "grzejniki", "patroniak", "gardhill", "hill ceramic")
+# "egrzejniki" / "grzejniki.pl" zamiast samego "grzejniki": samo slowo "grzejniki" lapalo kazda firme
+# z "grzejniki" w nazwie (np. "Grzejniki Kowalski") i przenosilo ja do zbiorczej bez FS.
+MONTHLY_KEYS = ("nalokalu", "egrzejniki", "grzejniki.pl", "patroniak", "gardhill", "hill ceramic")
 OWN_EMAILS = ("grzejniki.max@gmail.com",)  # wlasna skrzynka MAX - nie jest partnerem
 
 def is_monthly(o):
@@ -75,6 +77,19 @@ def is_pl_firm(o):
     c = (o.get("invoice_country_code") or o.get("delivery_country_code") or "").upper()
     return c == "PL"
 
+EU = set(OSS) | {"PL"}
+
+def eu_firm_without_vat_id(o):
+    """Firma spoza PL w UE bez numeru VAT-UE z prefiksem kraju: 0% (WDT) jest watpliwe.
+    Robot tego NIE zmienia (decyzja ksiegowej) - tylko ostrzega w raporcie."""
+    if not is_firm(o) or is_pl_firm(o):
+        return False
+    c = (o.get("invoice_country_code") or o.get("delivery_country_code") or "").upper()
+    if c not in EU:
+        return False
+    nip = re.sub(r"[^0-9A-Za-z]", "", o.get("invoice_nip") or "").upper()
+    return not (nip[:2].isalpha() and nip[:2] != "PL")
+
 def vat_changes(o):
     """Lista (pozycja, nowa_stawka). Prywatni: stawka PL/OSS. Polska firma: tylko 0% -> 23%."""
     t = target_rate(o)
@@ -90,42 +105,65 @@ def vat_changes(o):
             out.append((p, 23))
     return out
 
+def fetch_orders(status_id, since, key="date_add", param="date_from", unconfirmed=True):
+    """Pobiera WSZYSTKIE zamowienia ze statusu (getOrders zwraca max 100).
+    Kolejna strona od max(data) - bez +1, zeby nie zgubic zamowien z ta sama sekunda
+    na granicy stron; duplikaty usuwane po order_id."""
+    out, d = {}, since
+    while True:
+        batch = call("getOrders", {"status_id": status_id, param: d, "get_unconfirmed_orders": unconfirmed}).get("orders", [])
+        new = [x for x in batch if x["order_id"] not in out]
+        for x in batch:
+            out[x["order_id"]] = x
+        if len(batch) < 100:
+            break
+        nd = max(int(x[key]) for x in batch)
+        d = nd if new and nd > d else nd + 1  # zabezpieczenie przed petla
+    return list(out.values())
+
+def mask(upd):
+    """Do logu (repo publiczne!) tylko nazwy pol, bez danych osobowych."""
+    return sorted(upd)
+
 def main():
     since = int(time.time()) - 45 * 86400
-    orders, d = [], since
-    while True:
-        o = call("getOrders", {"status_id": STATUS_ID, "date_from": d, "get_unconfirmed_orders": True}).get("orders", [])
-        if not o:
-            break
-        orders += o
-        d = max(x["date_add"] for x in o) + 1
-        if len(o) < 100:
-            break
+    orders = fetch_orders(STATUS_ID, since)
     changes = 0
-    rest = []
+    errors = []
     for o in orders:
-        if is_monthly(o):
-            print(f"order {o['order_id']} -> status 'Fakturowanie zbiorcze'", flush=True)
-            changes += 1
-            if APPLY:
-                call("setOrderStatus", {"order_id": o["order_id"], "status_id": MONTHLY_STATUS_ID})
-        else:
-            rest.append(o)
-    for o in rest:
-        upd = fill_invoice_data(o)
-        if upd:
-            print(f"order {o['order_id']}: brak nabywcy -> {upd}", flush=True)
-            changes += 1
-            if APPLY:
-                call("setOrderFields", dict(order_id=o["order_id"], **upd))
-        # stawka liczona z danych PRZED skopiowaniem nabywcy: firma z adresu dostawy nie ma NIP,
-        # wiec dla niej poprawna jest stawka jak dla osoby prywatnej (OSS), nie WDT 0%
-        for p, t in vat_changes(o):
-            print(f"order {o['order_id']} {o['delivery_country_code']} {p['sku']}: VAT {p['tax_rate']} -> {t}", flush=True)
-            changes += 1
-            if APPLY:
-                call("setOrderProductFields", {"order_id": o["order_id"], "order_product_id": p["order_product_id"], "tax_rate": t})
-    print(f"orders in status: {len(orders)}, lines to change: {changes}, mode: {'APPLY' if APPLY else 'DRY-RUN'}")
+        # blad API na jednym zamowieniu nie zatrzymuje pozostalych (OpSync i tak je zaraz zabierze)
+        try:
+            changes += process_order(o)
+        except Exception as e:
+            errors.append(o["order_id"])
+            print(f"order {o['order_id']}: BLAD {e}", flush=True)
+    print(f"orders in status: {len(orders)}, lines to change: {changes}, errors: {len(errors)}, mode: {'APPLY' if APPLY else 'DRY-RUN'}")
+    if errors:
+        sys.exit(f"Bledy w zamowieniach: {errors}")
+
+def process_order(o):
+    changes = 0
+    if is_monthly(o):
+        print(f"order {o['order_id']} -> status 'Fakturowanie zbiorcze'", flush=True)
+        if APPLY:
+            call("setOrderStatus", {"order_id": o["order_id"], "status_id": MONTHLY_STATUS_ID})
+        return 1
+    upd = fill_invoice_data(o)
+    if upd:
+        print(f"order {o['order_id']}: brak nabywcy -> kopiuje z dostawy pola {mask(upd)}", flush=True)
+        changes += 1
+        if APPLY:
+            call("setOrderFields", dict(order_id=o["order_id"], **upd))
+    if eu_firm_without_vat_id(o):
+        print(f"order {o['order_id']}: UWAGA firma z UE bez numeru VAT-UE (prefiks kraju) - 0% WDT watpliwe, sprawdzic", flush=True)
+    # stawka liczona z danych PRZED skopiowaniem nabywcy: firma z adresu dostawy nie ma NIP,
+    # wiec dla niej poprawna jest stawka jak dla osoby prywatnej (OSS), nie WDT 0%
+    for p, t in vat_changes(o):
+        print(f"order {o['order_id']} {o['delivery_country_code']} {p['sku']}: VAT {p['tax_rate']} -> {t}", flush=True)
+        changes += 1
+        if APPLY:
+            call("setOrderProductFields", {"order_id": o["order_id"], "order_product_id": p["order_product_id"], "tax_rate": t})
+    return changes
 
 if __name__ == "__main__":
     main()
