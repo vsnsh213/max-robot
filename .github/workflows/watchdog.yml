@@ -1,0 +1,39 @@
+name: Straznik (watchdog) - stany i faktury
+# Tylko odczyt Base API i GitHub API. Problem = jeden e-mail na biuro@ + czerwony przebieg.
+# Pilne (roboty, stan < 50, blad straznika) - kazdy przebieg. Poranne (Do zafakturowania, FS bez PDF,
+# Nowe) - do e-maila tylko w przebiegu 09:00-11:59 Warszawa.
+# Bez harmonogramu GitHub: uruchamia cron-job.org co 3 h o :45 czasu warszawskiego
+# (00:45, 03:45, 06:45, 09:45, ...), wiec rano jest dokladnie jeden przebieg - 09:45.
+on:
+  workflow_dispatch:
+    inputs:
+      send_mail:
+        description: "1 = wyslij e-mail przy problemie, 0 = tylko log"
+        required: false
+        default: "1"
+# actions: read - odczyt przebiegow keep-stock / fix-vat; contents: read - checkout kodu
+permissions:
+  actions: read
+  contents: read
+concurrency:
+  group: watchdog
+  cancel-in-progress: false
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Watchdog
+        env:
+          BLT: ${{ secrets.BASELINKER_TOKEN }}
+          GITHUB_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+          SEND_MAIL: ${{ github.event.inputs.send_mail || '1' }}
+          SMTP_USER: ${{ secrets.WATCHDOG_SMTP_USER }}
+          SMTP_PASS: ${{ secrets.WATCHDOG_SMTP_PASS }}
+          MAIL_TO: "biuro@elna-service.pl"
+          TZ: "Europe/Warsaw"
+          # znane FS bez PDF (raport 28.11, sprawa Lechy) - zeby nie wysylac tego samego co 3 h
+          IGNORE_FS_ORDERS: "79859389 79862636 80137519 80311664 81040028 81694607 82315861 82561392 82690849"
+        run: python3 watchdog.py
