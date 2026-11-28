@@ -15,6 +15,8 @@ BLT = os.environ["BLT"]
 APPLY = os.environ.get("APPLY") == "1"
 MAX_UPLOADS = int(os.environ.get("MAX_UPLOADS", "1") or "1")
 ONLY = {x.strip() for x in os.environ.get("ONLY_ORDERS", "").split(",") if x.strip()}
+# zamowienia wstrzymane (np. czekamy na odpowiedz ksiegowej) - nigdy nie wysylamy
+SKIP = {x.strip() for x in os.environ.get("SKIP_ORDERS", "").split(",") if x.strip()}
 DAYS = int(os.environ.get("DAYS", "40") or "40")
 STATUS_IDS = [int(x) for x in os.environ.get("STATUS_IDS", "37715").split(",") if x.strip()]
 TYPE_CODE = os.environ.get("TYPE_CODE", "CUSTOMER_INVOICE")
@@ -115,7 +117,7 @@ def upload(m, ext_id, pdf, fname):
     return mk(m, f"/api/orders/{urllib.parse.quote(ext_id)}/documents", "POST", body, f"multipart/form-data; boundary={bnd}")
 
 def main():
-    print(f"Tryb: {'ZAPIS' if APPLY else 'DRY-RUN (nic nie wysylam)'}; MAX_UPLOADS={MAX_UPLOADS}; ONLY={sorted(ONLY) or '-'}")
+    print(f"Tryb: {'ZAPIS' if APPLY else 'DRY-RUN (nic nie wysylam)'}; MAX_UPLOADS={MAX_UPLOADS}; ONLY={sorted(ONLY) or '-'}; SKIP={sorted(SKIP) or '-'}")
     active = [n for n in WHICH.split(",") if n in MARKETS]
     for n in active:
         m = MARKETS[n]
@@ -137,6 +139,8 @@ def main():
         oid = str(o["order_id"])
         if ONLY and oid not in ONLY:
             continue
+        if oid in SKIP:
+            print(f"[{n}] Base {oid}: na liscie SKIP_ORDERS - pomijam"); continue
         m = MARKETS[n]
         ext = (o.get("external_order_id") or "").strip()
         tag = f"[{n}] Base {oid} / {ext or '?'}"  # bez nazwiska: logi repo sa publiczne
